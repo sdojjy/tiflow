@@ -106,12 +106,12 @@ type CDCKey struct {
 // Note that tidb-dashboard depends on this prefix to filter out TiCDC keys.
 // Ref: https://github.com/pingcap/tidb-dashboard/blob/1f39ee09c5352adbf23af8ec7e15020147ef9ca4/pkg/utils/topology/ticdc.go#L22
 func BaseKey(clusterID string) string {
-	return fmt.Sprintf("/tidb/cdc/%s", clusterID)
+	return "/tidb/cdc"
 }
 
 // NamespacedPrefix returns the etcd prefix of changefeed data
 func NamespacedPrefix(clusterID, namespace string) string {
-	return BaseKey(clusterID) + "/" + namespace
+	return "/tidb/cdc"
 }
 
 // Parse parses the given etcd key
@@ -120,9 +120,9 @@ func (k *CDCKey) Parse(clusterID, key string) error {
 		return cerror.ErrInvalidEtcdKey.GenWithStackByArgs(key)
 	}
 	key = key[len("/tidb/cdc"):]
-	parts := strings.Split(key, "/")
-	k.ClusterID = parts[1]
-	key = key[len(k.ClusterID)+1:]
+	//parts := strings.Split(key, "/")
+	k.ClusterID = "defauult"
+	//key = key[len(k.ClusterID)+1:]
 	if strings.HasPrefix(key, metaPrefix) {
 		key = key[len(metaPrefix):]
 		switch {
@@ -144,15 +144,15 @@ func (k *CDCKey) Parse(clusterID, key string) error {
 			return cerror.ErrInvalidEtcdKey.GenWithStackByArgs(key)
 		}
 	} else {
-		namespace := parts[2]
-		key = key[len(namespace)+1:]
-		k.Namespace = namespace
+		//namespace := parts[2]
+		//key = key[len(namespace)+1:]
+		k.Namespace = "default"
 		switch {
 		case strings.HasPrefix(key, ChangefeedInfoKey):
 			k.Tp = CDCKeyTypeChangefeedInfo
 			k.CaptureID = ""
 			k.ChangefeedID = model.ChangeFeedID{
-				Namespace: namespace,
+				Namespace: "default",
 				ID:        key[len(ChangefeedInfoKey)+1:],
 			}
 			k.OwnerLeaseID = ""
@@ -168,7 +168,7 @@ func (k *CDCKey) Parse(clusterID, key string) error {
 			k.Tp = CDCKeyTypeChangeFeedStatus
 			k.CaptureID = ""
 			k.ChangefeedID = model.ChangeFeedID{
-				Namespace: namespace,
+				Namespace: "default",
 				ID:        key[len(ChangefeedStatusKey)+1:],
 			}
 			k.OwnerLeaseID = ""
@@ -180,7 +180,7 @@ func (k *CDCKey) Parse(clusterID, key string) error {
 			k.Tp = CDCKeyTypeTaskPosition
 			k.CaptureID = splitKey[0]
 			k.ChangefeedID = model.ChangeFeedID{
-				Namespace: namespace,
+				Namespace: "default",
 				ID:        splitKey[1],
 			}
 			k.OwnerLeaseID = ""
