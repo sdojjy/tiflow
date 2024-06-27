@@ -302,38 +302,59 @@ func (r *Manager) handleMessageHeartbeatResponse(
 func (r *Manager) handleMessageDispatchTableResponse(
 	from model.CaptureID, msg *schedulepb.DispatchTableResponse,
 ) ([]*schedulepb.Message, error) {
+	var msgs []*schedulepb.Message
 	var status *tablepb.TableStatus
-	switch resp := msg.Response.(type) {
-	case *schedulepb.DispatchTableResponse_AddTable:
-		status = resp.AddTable.Status
-	case *schedulepb.DispatchTableResponse_RemoveTable:
-		status = resp.RemoveTable.Status
-	default:
-		log.Warn("schedulerv3: ignore unknown dispatch table response",
-			zap.String("namespace", r.changefeedID.Namespace),
-			zap.String("changefeed", r.changefeedID.ID),
-			zap.Any("message", msg))
-		return nil, nil
-	}
+	if msg.GetBatchAdd() != nil {
+		for _, resp := range msg.GetBatchAdd().Resps {
+			status = resp.Status
 
-	table, ok := r.spans.Get(status.Span)
-	if !ok {
-		log.Info("schedulerv3: ignore table status no table found",
-			zap.String("namespace", r.changefeedID.Namespace),
-			zap.String("changefeed", r.changefeedID.ID),
-			zap.Any("message", status))
-		return nil, nil
+			table, ok := r.spans.Get(status.Span)
+			if !ok {
+				log.Info("schedulerv3: ignore table status no table found",
+					zap.String("namespace", r.changefeedID.Namespace),
+					zap.String("changefeed", r.changefeedID.ID),
+					zap.Any("message", status))
+				continue
+			}
+			mss, err := table.handleTableStatus(from, status)
+			if err != nil {
+				return nil, errors.Trace(err)
+			}
+			if table.hasRemoved() {
+				log.Info("schedulerv3: table has removed",
+					zap.String("namespace", r.changefeedID.Namespace),
+					zap.String("changefeed", r.changefeedID.ID),
+					zap.Int64("tableID", status.Span.TableID))
+				r.spans.Delete(status.Span)
+			}
+			msgs = append(msgs, mss...)
+		}
 	}
-	msgs, err := table.handleTableStatus(from, status)
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
-	if table.hasRemoved() {
-		log.Info("schedulerv3: table has removed",
-			zap.String("namespace", r.changefeedID.Namespace),
-			zap.String("changefeed", r.changefeedID.ID),
-			zap.Int64("tableID", status.Span.TableID))
-		r.spans.Delete(status.Span)
+	if msg.GetBatchRemove() != nil {
+		for _, resp := range msg.GetBatchRemove().Resps {
+			status = resp.Status
+
+			table, ok := r.spans.Get(status.Span)
+			if !ok {
+				log.Info("schedulerv3: ignore table status no table found",
+					zap.String("namespace", r.changefeedID.Namespace),
+					zap.String("changefeed", r.changefeedID.ID),
+					zap.Any("message", status))
+				continue
+			}
+			mss, err := table.handleTableStatus(from, status)
+			if err != nil {
+				return nil, errors.Trace(err)
+			}
+			if table.hasRemoved() {
+				log.Info("schedulerv3: table has removed",
+					zap.String("namespace", r.changefeedID.Namespace),
+					zap.String("changefeed", r.changefeedID.ID),
+					zap.Int64("tableID", status.Span.TableID))
+				r.spans.Delete(status.Span)
+			}
+			msgs = append(msgs, mss...)
+		}
 	}
 	return msgs, nil
 }

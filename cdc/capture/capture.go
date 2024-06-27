@@ -16,6 +16,10 @@ package capture
 import (
 	"context"
 	"fmt"
+	"github.com/pingcap/tiflow/new_arch"
+	"github.com/pingcap/tiflow/new_arch/coordinator"
+	"github.com/pingcap/tiflow/new_arch/maintainer"
+	"github.com/pingcap/tiflow/new_arch/table_range_maintainer"
 	"io"
 	"os"
 	"strings"
@@ -153,7 +157,7 @@ func NewCapture(pdEndpoints []string,
 		cancel:              func() {},
 		pdEndpoints:         pdEndpoints,
 		newProcessorManager: processor.NewManager,
-		newOwner:            owner.NewOwner,
+		newOwner:            coordinator.NewCoordinator,
 		info:                &model.CaptureInfo{},
 		sortEngineFactory:   sortEngineMangerFactory,
 		migrator:            migrate.NewMigrator(etcdClient, pdEndpoints, conf),
@@ -287,10 +291,8 @@ func (c *captureImpl) reset(ctx context.Context) (*vars.GlobalVars, error) {
 		MessageRouter:        c.MessageRouter,
 		SortEngineFactory:    c.sortEngineFactory,
 		ChangefeedThreadPool: c.ChangefeedThreadPool,
+		CaptureManager:       new_arch.NewCaptureManager(),
 	}
-	c.processorManager = c.newProcessorManager(
-		c.info, c.upstreamManager, &c.liveness, c.config.Debug.Scheduler, globalVars)
-
 	log.Info("capture initialized", zap.Any("capture", c.info))
 	return globalVars, nil
 }
@@ -368,20 +370,7 @@ func (c *captureImpl) run(stdCtx context.Context) error {
 	g, stdCtx := errgroup.WithContext(stdCtx)
 	stdCtx, cancel := context.WithCancel(stdCtx)
 
-	g.Go(func() error {
-		// when the campaignOwner returns an error, it means that the owner throws
-		// an unrecoverable serious errors (recoverable errors are intercepted in the owner tick)
-		// so we should restart the capture.
-		err := c.campaignOwner(stdCtx, globalVars)
-		if err != nil || c.liveness.Load() != model.LivenessCaptureStopping {
-			log.Warn("campaign owner routine exited, restart the capture",
-				zap.String("captureID", c.info.ID), zap.Error(err))
-			// Throw ErrCaptureSuicide to restart capture.
-			return cerror.ErrCaptureSuicide.FastGenByArgs()
-		}
-		return nil
-	})
-
+	// add an etcd worker to sync captures, only sync the capture keys to reduce the network traffic
 	g.Go(func() error {
 		// Processor manager should be closed as soon as possible to prevent double write issue.
 		defer func() {
@@ -395,9 +384,7 @@ func (c *captureImpl) run(stdCtx context.Context) error {
 			log.Info("processor manager closed", zap.String("captureID", c.info.ID))
 		}()
 		processorFlushInterval := time.Duration(c.config.ProcessorFlushInterval)
-
 		globalState := orchestrator.NewGlobalState(c.EtcdClient.GetClusterID(), c.config.CaptureSessionTTL)
-
 		globalState.SetOnCaptureAdded(func(captureID model.CaptureID, addr string) {
 			c.MessageRouter.AddPeer(captureID, addr)
 		})
@@ -408,10 +395,32 @@ func (c *captureImpl) run(stdCtx context.Context) error {
 		// when the etcd worker of processor returns an error, it means that the processor throws an unrecoverable serious errors
 		// (recoverable errors are intercepted in the processor tick)
 		// so we should also stop the processor and let capture restart or exit
-		err := c.runEtcdWorker(stdCtx, c.processorManager, globalState, processorFlushInterval, util.RoleProcessor.String())
+		err := c.runEtcdWorker(stdCtx, globalVars.CaptureManager, globalState, processorFlushInterval, util.RoleProcessor.String())
 		log.Info("processor routine exited",
 			zap.String("captureID", c.info.ID), zap.Error(err))
 		return err
+	})
+
+	g.Go(func() error {
+		// when the campaignOwner returns an error, it means that the owner throws
+		// an unrecoverable serious errors (recoverable errors are intercepted in the owner tick)
+		// so we should restart the capture.
+		err := c.campaignOwner(stdCtx, globalVars)
+		if err != nil || c.liveness.Load() != model.LivenessCaptureStopping {
+			log.Warn("campaign owner routine exited, restart the capture",
+				zap.String("captureID", c.info.ID), zap.Error(err))
+			// Throw ErrCaptureSuicide to restart capture.
+			return cerror.ErrCaptureSuicide.FastGenByArgs()
+		}
+		return nil
+	})
+	g.Go(func() error {
+		m := maintainer.NewMaintainerManager(c.upstreamManager, c.config.Debug.Scheduler, globalVars)
+		return m.Tick(stdCtx)
+	})
+	g.Go(func() error {
+		table_range_maintainer.NewTableRangeMaintainerManager(c.upstreamManager, c.config.Debug.Scheduler, globalVars)
+		return nil
 	})
 
 	g.Go(func() error {
@@ -581,6 +590,10 @@ func (c *captureImpl) runEtcdWorker(
 	role string,
 ) error {
 	reactorState.Role = role
+	baseKey := etcd.BaseKey(c.EtcdClient.GetClusterID())
+	if role == util.RoleProcessor.String() {
+		baseKey = baseKey + "/capture"
+	}
 	etcdWorker, err := orchestrator.NewEtcdWorker(c.EtcdClient,
 		etcd.BaseKey(c.EtcdClient.GetClusterID()), reactor, reactorState, c.migrator)
 	if err != nil {

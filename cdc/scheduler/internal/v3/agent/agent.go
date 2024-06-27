@@ -212,7 +212,41 @@ func (a *agent) Tick(ctx context.Context) (*schedulepb.Barrier, error) {
 		return nil, errors.Trace(err)
 	}
 
-	outboundMessages = append(outboundMessages, responses...)
+	var batchAdd []*schedulepb.AddTableResponse
+	var addTableResp *schedulepb.Message
+	var batchRemove []*schedulepb.RemoveTableResponse
+	var removeTableResp *schedulepb.Message
+	for _, msg := range responses {
+		switch msg.MsgType {
+		case schedulepb.MsgDispatchTableResponse:
+			switch resp := msg.DispatchTableResponse.Response.(type) {
+			case *schedulepb.DispatchTableResponse_AddTable:
+				batchAdd = append(batchAdd, resp.AddTable)
+				if addTableResp == nil {
+					addTableResp = msg
+					addTableResp.DispatchTableResponse.Response = &schedulepb.DispatchTableResponse_BatchAdd{
+						BatchAdd: &schedulepb.AddTableResponses{
+							Resps: batchAdd,
+						},
+					}
+					outboundMessages = append(outboundMessages, addTableResp)
+				}
+			case *schedulepb.DispatchTableResponse_RemoveTable:
+				batchRemove = append(batchRemove, resp.RemoveTable)
+				if removeTableResp == nil {
+					removeTableResp = msg
+					removeTableResp.DispatchTableResponse.Response = &schedulepb.DispatchTableResponse_BatchRemove{
+						BatchRemove: &schedulepb.RemoveTableResponses{
+							Resps: batchRemove,
+						},
+					}
+					outboundMessages = append(outboundMessages, removeTableResp)
+				}
+			}
+		default:
+			outboundMessages = append(outboundMessages, msg)
+		}
+	}
 
 	if err := a.sendMsgs(ctx, outboundMessages); err != nil {
 		return nil, errors.Trace(err)
@@ -347,48 +381,44 @@ func (a *agent) handleMessageDispatchTableRequest(
 		task  *dispatchTableTask
 		ok    bool
 	)
-	// make the assumption that all tables are tracked by the agent now.
-	// this should be guaranteed by the caller of the method.
-	switch req := request.Request.(type) {
-	case *schedulepb.DispatchTableRequest_AddTable:
-		span := req.AddTable.GetSpan()
-		task = &dispatchTableTask{
-			Span:       span,
-			Checkpoint: req.AddTable.GetCheckpoint(),
-			IsRemove:   false,
-			IsPrepare:  req.AddTable.GetIsSecondary(),
-			Epoch:      epoch,
-			status:     dispatchTableTaskReceived,
+	if request.GetBatchAdd() != nil {
+		for _, req := range request.GetBatchAdd().Requests {
+			span := req.GetSpan()
+			task = &dispatchTableTask{
+				Span:       span,
+				Checkpoint: req.GetCheckpoint(),
+				IsRemove:   false,
+				IsPrepare:  req.GetIsSecondary(),
+				Epoch:      epoch,
+				status:     dispatchTableTaskReceived,
+			}
+			table = a.tableM.addTableSpan(span)
+			table.injectDispatchTableTask(task)
 		}
-		table = a.tableM.addTableSpan(span)
-	case *schedulepb.DispatchTableRequest_RemoveTable:
-		span := req.RemoveTable.GetSpan()
-		table, ok = a.tableM.getTableSpan(span)
-		if !ok {
-			log.Warn("schedulerv3: agent ignore remove table request, "+
-				"since the table not found",
-				zap.String("capture", a.CaptureID),
-				zap.String("namespace", a.ChangeFeedID.Namespace),
-				zap.String("changefeed", a.ChangeFeedID.ID),
-				zap.String("span", span.String()),
-				zap.Any("request", request))
-			return
-		}
-		task = &dispatchTableTask{
-			Span:     span,
-			IsRemove: true,
-			Epoch:    epoch,
-			status:   dispatchTableTaskReceived,
-		}
-	default:
-		log.Warn("schedulerv3: agent ignore unknown dispatch table request",
-			zap.String("capture", a.CaptureID),
-			zap.String("namespace", a.ChangeFeedID.Namespace),
-			zap.String("changefeed", a.ChangeFeedID.ID),
-			zap.Any("request", request))
-		return
 	}
-	table.injectDispatchTableTask(task)
+	if request.GetBatchRemove() != nil {
+		for _, req := range request.GetBatchRemove().Requests {
+			span := req.GetSpan()
+			table, ok = a.tableM.getTableSpan(span)
+			if !ok {
+				log.Warn("schedulerv3: agent ignore remove table request, "+
+					"since the table not found",
+					zap.String("capture", a.CaptureID),
+					zap.String("namespace", a.ChangeFeedID.Namespace),
+					zap.String("changefeed", a.ChangeFeedID.ID),
+					zap.String("span", span.String()),
+					zap.Any("request", request))
+				return
+			}
+			task = &dispatchTableTask{
+				Span:     span,
+				IsRemove: true,
+				Epoch:    epoch,
+				status:   dispatchTableTaskReceived,
+			}
+			table.injectDispatchTableTask(task)
+		}
+	}
 }
 
 // Close implement agent interface
