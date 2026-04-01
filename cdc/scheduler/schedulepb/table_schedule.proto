@@ -35,6 +35,10 @@ message AddTableRequest {
     processor.tablepb.Checkpoint checkpoint = 3 [(gogoproto.nullable) = false];
 }
 
+message AddTableRequests {
+  repeated AddTableRequest requests = 1;
+}
+
 message RemoveTableRequest {
     int64 table_id = 1 [
         (gogoproto.casttype) = "github.com/pingcap/tiflow/cdc/model.TableID",
@@ -44,10 +48,17 @@ message RemoveTableRequest {
     processor.tablepb.Span span = 2 [(gogoproto.nullable) = false];
 }
 
+message RemoveTableRequests {
+  repeated RemoveTableRequest requests =2;
+}
+
+
 message DispatchTableRequest {
     oneof request {
         AddTableRequest add_table = 1;
         RemoveTableRequest remove_table = 2;
+        AddTableRequests batch_add = 3;
+        RemoveTableRequests batch_remove=4;
     }
 }
 
@@ -65,7 +76,17 @@ message DispatchTableResponse {
     oneof response {
         AddTableResponse add_table = 1;
         RemoveTableResponse remove_table = 2;
+        AddTableResponses batch_add =3;
+        RemoveTableResponses batch_remove = 4;
     }
+}
+
+message RemoveTableResponses {
+  repeated RemoveTableResponse resps = 1;
+}
+
+message AddTableResponses  {
+  repeated AddTableResponse resps = 1;
 }
 
 message TableBarrier {

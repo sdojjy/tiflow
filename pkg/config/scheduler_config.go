@@ -77,10 +77,10 @@ func NewDefaultSchedulerConfig() *SchedulerConfig {
 		// By default, owner ticks every 50ms, we want to low the frequency of
 		// collecting stats to reduce memory allocation and CPU usage.
 		CollectStatsTick:   200, // 200 * 50ms = 10s.
-		MaxTaskConcurrency: 10,
+		MaxTaskConcurrency: 100,
 		// TODO: no need to check balance each minute, relax the interval.
 		CheckBalanceInterval: TomlDuration(time.Minute),
-		AddTableBatchSize:    50,
+		AddTableBatchSize:    20,
 	}
 }
 

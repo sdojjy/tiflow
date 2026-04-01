@@ -15,6 +15,7 @@ package vars
 
 import (
 	"context"
+	"github.com/pingcap/tiflow/new_arch"
 	"time"
 
 	"github.com/pingcap/tiflow/cdc/model"
@@ -45,6 +46,8 @@ type GlobalVars struct {
 
 	// ChangefeedThreadPool is the thread pool for changefeed initialization
 	ChangefeedThreadPool workerpool.AsyncPool
+
+	CaptureManager *new_arch.CaptureManager
 }
 
 // NewGlobalVars4Test returns a GlobalVars for test,
